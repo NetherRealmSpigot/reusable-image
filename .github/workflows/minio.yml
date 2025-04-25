@@ -1,0 +1,134 @@
+name: Build and Test minio
+
+on:
+  push:
+    branches:
+      - "master"
+    paths:
+      - "minio.Dockerfile"
+  workflow_dispatch:
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  PACKAGE_NAME: gha-reusable-minio
+  TEST_S3_ACCESS_KEY: testadmin
+  TEST_S3_SECRET_KEY: testadmin123456
+
+jobs:
+  build:
+    name: Build image
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    outputs:
+      digest: ${{ steps.build-push.outputs.digest }}
+      image: ${{ steps.env-setup.outputs.docker_base_image }}
+      tag: ${{ steps.env-setup.outputs.docker_tag }}
+
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Setup
+        id: env-setup
+        run: |
+          docker_base_image="ghcr.io/${{ github.repository_owner }}/${{ env.PACKAGE_NAME }}"
+          docker_base_image=$(echo $docker_base_image | tr '[:upper:]' '[:lower:]')
+          echo "docker_base_image=$docker_base_image" >> $GITHUB_OUTPUT
+          
+          docker_tag="nightly"
+          echo "docker_tag=$docker_tag" >> $GITHUB_OUTPUT
+
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.env-setup.outputs.docker_base_image }}
+          tags: ${{ steps.env-setup.outputs.docker_tag }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        id: build-push
+        with:
+          context: .
+          file: minio.Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+  test:
+    name: Test image
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    permissions:
+      contents: read
+      packages: read
+
+    services:
+      minio:
+        image: "${{ needs.build.outputs.image }}@${{ needs.build.outputs.digest }}"
+        ports:
+          - 9000:9000
+        env:
+          MINIO_ROOT_USER: ${{ env.TEST_S3_ACCESS_KEY }}
+          MINIO_ROOT_PASSWORD: ${{ env.TEST_S3_SECRET_KEY }}
+        volumes:
+          - /tmp/data:/data
+          - /tmp/config:/root/.minio
+        options: >-
+          --health-cmd "curl -I http://127.0.0.1:9000/minio/health/live"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        credentials:
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run
+        env:
+          AWS_ACCESS_KEY_ID: ${{ env.TEST_S3_ACCESS_KEY }}
+          AWS_SECRET_ACCESS_KEY: ${{ env.TEST_S3_SECRET_KEY }}
+          AWS_EC2_METADATA_DISABLED: "true"
+        run: aws --endpoint-url http://127.0.0.1:9000/ s3 mb s3://test-bucket
+
+  clean:
+    name: Clean untagged
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+
+    steps:
+      - uses: NorthRealm/reusable-actions/delete-untagged-ghcr-action@main
+        with:
+          package_name: ${{ env.PACKAGE_NAME }}
+        continue-on-error: true
