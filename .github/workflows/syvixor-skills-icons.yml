@@ -21,7 +21,7 @@ jobs:
   build:
     name: Build image
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     outputs:
       digest: ${{ steps.build-push.outputs.digest }}
       image: ${{ steps.env-setup.outputs.docker_base_image }}
@@ -46,6 +46,12 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ github.token }}
 
+      - name: Setup QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
       - name: Setup
         id: env-setup
         run: |
@@ -69,14 +75,18 @@ jobs:
         with:
           context: .
           push: true
+          platforms: linux/amd64,linux/arm64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
   
   test:
     name: Test image
     needs: build
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
+    strategy:
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
 
     permissions:
       contents: read
