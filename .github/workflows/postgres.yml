@@ -1,0 +1,160 @@
+name: PostgreSQL
+
+on:
+  push:
+    branches:
+      - "master"
+    paths:
+      - "postgres.Dockerfile"
+  workflow_dispatch:
+  schedule:
+    - cron: "0 0 * * *"
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  PACKAGE_NAME: postgres
+  TEST_PSQL_DB: test_db
+  TEST_PSQL_USER: admin
+  TEST_PSQL_PWD: 123456
+
+jobs:
+  build:
+    name: Build image
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    outputs:
+      digest: ${{ steps.build-push.outputs.digest }}
+      image: ${{ steps.env-setup.outputs.docker_base_image }}
+      tag: ${{ steps.env-setup.outputs.docker_tag }}
+
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Setup QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Setup
+        id: env-setup
+        run: |
+          postgresql_version="16-alpine"
+          echo "postgresql_version=$postgresql_version"  >> $GITHUB_OUTPUT
+          
+          docker_base_image="ghcr.io/${{ github.repository_owner }}/${{ env.PACKAGE_NAME }}"
+          docker_base_image=$(echo $docker_base_image | tr '[:upper:]' '[:lower:]')
+          echo "docker_base_image=$docker_base_image" >> $GITHUB_OUTPUT
+          
+          docker_tag="${postgresql_version}-nightly"
+          echo "docker_tag=$docker_tag" >> $GITHUB_OUTPUT
+
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.env-setup.outputs.docker_base_image }}
+          tags: ${{ steps.env-setup.outputs.docker_tag }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        id: build-push
+        with:
+          context: .
+          file: postgres.Dockerfile
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+  test:
+    name: Test image
+    needs: build
+    strategy:
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+
+    permissions:
+      contents: read
+      packages: read
+
+    services:
+      db:
+        image: "${{ needs.build.outputs.image }}@${{ needs.build.outputs.digest }}"
+        credentials:
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+        env:
+          POSTGRES_DB: ${{ env.TEST_PSQL_DB }}
+          POSTGRES_USER: ${{ env.TEST_PSQL_USER }}
+          POSTGRES_PASSWORD: ${{ env.TEST_PSQL_PWD }}
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+    steps:
+      - name: Setup
+        run: |
+          sudo apt-get install -y curl ca-certificates
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc --fail https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          
+          . /etc/os-release
+          sudo sh -c "echo 'deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $VERSION_CODENAME-pgdg main' > /etc/apt/sources.list.d/pgdg.list"
+          
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client-16
+        continue-on-error: false
+
+      - name: Run
+        run: |
+          set -e
+          set -o pipefail
+          PGPASSWORD=${{ env.TEST_PSQL_PWD }} psql -U ${{ env.TEST_PSQL_USER }} -h 127.0.0.1 -p 5432 -d ${{ env.TEST_PSQL_DB }} -v ON_ERROR_STOP=on << EOS
+          CREATE EXTENSION IF NOT EXISTS pgcrypto;
+          CREATE EXTENSION IF NOT EXISTS nanoid;
+          CREATE EXTENSION IF NOT EXISTS snowflake;
+          EOS
+        continue-on-error: false
+
+  clean:
+    name: Clean untagged
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+
+    steps:
+      - uses: NorthRealm/reusable-actions/delete-untagged-ghcr-action@main
+        with:
+          package_name: ${{ env.PACKAGE_NAME }}
+        continue-on-error: true
