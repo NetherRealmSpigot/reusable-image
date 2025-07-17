@@ -15,7 +15,7 @@ defaults:
     shell: bash
 
 env:
-  PACKAGE_NAME: reusable-mediawiki
+  PACKAGE_NAME: mediawiki
 
 jobs:
   build:
