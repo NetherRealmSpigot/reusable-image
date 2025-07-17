@@ -1,0 +1,1 @@
+FROM ghcr.io/netherrealmspigot/synapse-s3:nightly
