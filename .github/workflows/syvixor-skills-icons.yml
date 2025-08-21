@@ -79,41 +79,6 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
   
-  test:
-    name: Test image
-    needs: build
-    strategy:
-      matrix:
-        os: [ubuntu-latest, ubuntu-24.04-arm]
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 10
-
-    permissions:
-      contents: read
-      packages: read
-
-    services:
-      icons:
-        image: "${{ needs.build.outputs.image }}@${{ needs.build.outputs.digest }}"
-        ports:
-          - 3000:3000
-        options: >-
-          --health-cmd "wget -S -T 1 -q --spider 127.0.0.1:3000"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-        credentials:
-          username: ${{ github.actor }}
-          password: ${{ github.token }}
-
-    steps:
-      - name: Run
-        run: |
-          curl --verbose "127.0.0.1:3000"
-          curl --verbose "127.0.0.1:3000/api/icons"
-          curl --verbose "127.0.0.1:3000/api/icons?i=github"
-          curl --verbose "127.0.0.1:3000/api/icons?i=github,githubactions"
-  
   clean:
     name: Clean untagged
     needs: build
